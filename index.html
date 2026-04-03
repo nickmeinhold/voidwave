@@ -176,7 +176,7 @@
           <div class="desc">visualize the room</div>
         </div>
       </div>
-      <div class="hint">space: pause / evolve · ←→: shader · ↑↓: track · c: code · f: fullscreen</div>
+      <div class="hint">space: pause / evolve · ←→: shader · ↑↓: track / island · c: code · f: fullscreen</div>
     </div>
   </div>
 
@@ -690,71 +690,89 @@
     return lines.join('\n');
   }
 
-  // ─── Evolution: fitness with decay + novelty ────────────────
-  const fitness = {};     // label → decaying fitness score
-  const recentGenes = []; // last N generations of gene labels, for novelty
+  // ─── Ring topology: 5 islands, each evolving independently ──
+  // Lyra's finding: ring preserves diversity better than any other
+  // connected topology. lambda_2 ~ 0.098 for n=5 -> slow mixing, rich lineages.
+
+  const NUM_ISLANDS = 5;
+  let currentIsland = 0;
+
+  // Per-island state
+  const islands = Array.from({ length: NUM_ISLANDS }, (_, i) => ({
+    id: i,
+    fitness: {},
+    recentGenes: [],
+    program: null,
+    source: '',
+    selections: null,
+    lastMutationTime: -999,
+  }));
+
   const RECENT_MEMORY = 8;
+  const MUTATION_INTERVAL = 1.5;
 
-  function likeCurrentShader() {
-    if (!livingSelections) return;
-    for (const category of Object.keys(livingSelections)) {
-      const label = livingSelections[category].label;
-      fitness[label] = (fitness[label] || 0) + 1.0;
-    }
-    lastMutationTime = (performance.now() - startTime) / 1000;
-    const totalLikes = Object.values(fitness).reduce((a,b) => a+b, 0);
-    showTrackName('', 'evolved ×' + Math.round(totalLikes));
-  }
-
-  function decayFitness() {
-    // Everything fades — old preferences lose grip
-    for (const label of Object.keys(fitness)) {
-      fitness[label] *= 0.7;  // 30% decay per generation
-      if (fitness[label] < 0.05) delete fitness[label];
+  function islandDecayFitness(island) {
+    for (const label of Object.keys(island.fitness)) {
+      island.fitness[label] *= 0.7;
+      if (island.fitness[label] < 0.05) delete island.fitness[label];
     }
   }
 
-  function recordGeneration(selections) {
+  function islandRecordGeneration(island, selections) {
     const labels = new Set();
-    for (const category of Object.keys(selections)) {
-      labels.add(selections[category].label);
-    }
-    recentGenes.push(labels);
-    if (recentGenes.length > RECENT_MEMORY) recentGenes.shift();
+    for (const cat of Object.keys(selections)) labels.add(selections[cat].label);
+    island.recentGenes.push(labels);
+    if (island.recentGenes.length > RECENT_MEMORY) island.recentGenes.shift();
   }
 
-  function getNoveltyBonus(label) {
-    // How many of the last N generations contained this gene?
+  function islandGetNoveltyBonus(island, label) {
     let appearances = 0;
-    for (const gen of recentGenes) {
+    for (const gen of island.recentGenes) {
       if (gen.has(label)) appearances++;
     }
-    // Genes we haven't seen recently get a big bonus
-    // Genes we've seen a lot get penalized
-    return (1.0 - appearances / Math.max(1, recentGenes.length)) * 0.6;
+    return (1.0 - appearances / Math.max(1, island.recentGenes.length)) * 0.6;
   }
 
   function getFitnessBonus(label) {
-    const likes = fitness[label] || 0;
-    const novelty = getNoveltyBonus(label);
-    // Fitness is a gentle nudge (capped), novelty is a strong pull
+    const island = islands[currentIsland];
+    const likes = island.fitness[label] || 0;
+    const novelty = islandGetNoveltyBonus(island, label);
     return Math.min(likes * 0.3, 0.6) + novelty;
   }
 
-  // Living shader state
-  let livingProgram = null;
-  let livingSource = '';
-  let livingSelections = null;
-  let lastMutationTime = 0;
-  const MUTATION_INTERVAL = 1.5; // seconds between mutations
+  // Migration: liked genes travel to ring neighbors only
+  function migrateToNeighbors(sourceIsland, selections) {
+    const left = (sourceIsland.id - 1 + NUM_ISLANDS) % NUM_ISLANDS;
+    const right = (sourceIsland.id + 1) % NUM_ISLANDS;
+    for (const neighbor of [islands[left], islands[right]]) {
+      for (const cat of Object.keys(selections)) {
+        const label = selections[cat].label;
+        neighbor.fitness[label] = (neighbor.fitness[label] || 0) + 0.4;
+      }
+    }
+  }
 
-  function mutateLivingShader(audio, time) {
-    if (time - lastMutationTime < MUTATION_INTERVAL) return false;
+  function likeCurrentShader() {
+    const island = islands[currentIsland];
+    if (!island.selections) return;
+    for (const cat of Object.keys(island.selections)) {
+      const label = island.selections[cat].label;
+      island.fitness[label] = (island.fitness[label] || 0) + 1.0;
+    }
+    migrateToNeighbors(island, island.selections);
+    island.lastMutationTime = (performance.now() - startTime) / 1000;
+    const totalLikes = Object.values(island.fitness).reduce((a,b) => a+b, 0);
+    showTrackName('island ' + currentIsland, 'evolved x' + Math.round(totalLikes));
+  }
 
-    // Decay old preferences — nothing lives forever
-    decayFitness();
+  function mutateIsland(islandIdx, audio, time) {
+    const island = islands[islandIdx];
+    if (time - island.lastMutationTime < MUTATION_INTERVAL) return false;
 
-    // Fresh random values each mutation
+    const prevIsland = currentIsland;
+    currentIsland = islandIdx;
+    islandDecayFitness(island);
+
     const newSelections = {
       coords: selectGene(genes.coords, audio, Math.random()),
       shapes: selectGene(genes.shapes, audio, Math.random()),
@@ -763,20 +781,19 @@
       mods:   selectGene(genes.mods, audio, Math.random()),
     };
 
-    // Inject live audio values as constants into the code comments
-    // so the displayed code shows the actual numbers driving the mutation
-    const audioComment = `  // audio: bass=${audio.bass.toFixed(2)} mid=${audio.mid.toFixed(2)} treble=${audio.treble.toFixed(2)}`;
+    currentIsland = prevIsland;
 
+    const audioComment = '  // island ' + islandIdx + ' | bass=' + audio.bass.toFixed(2) + ' mid=' + audio.mid.toFixed(2) + ' treble=' + audio.treble.toFixed(2);
     const newSource = assembleLivingShader(newSelections, audioComment);
     const newProgram = createProgram(VERT_SHADER, newSource);
 
     if (newProgram) {
-      if (livingProgram) gl.deleteProgram(livingProgram);
-      livingProgram = newProgram;
-      livingSource = newSource;
-      livingSelections = newSelections;
-      lastMutationTime = time;
-      recordGeneration(newSelections);
+      if (island.program) gl.deleteProgram(island.program);
+      island.program = newProgram;
+      island.source = newSource;
+      island.selections = newSelections;
+      island.lastMutationTime = time;
+      islandRecordGeneration(island, newSelections);
       return true;
     }
     return false;
@@ -833,11 +850,10 @@
     return { name: s.name, program: prog };
   }).filter(p => p.program);
 
-  // Add the living shader as the last entry
-  // Initialize with a calm default so it has something to show
+  // Initialize all islands with a calm default
   const defaultAudio = { bass: 0, mid: 0, treble: 0, energy: 0 };
-  mutateLivingShader(defaultAudio, -999);
-  programs.push({ name: 'living', program: livingProgram, living: true });
+  for (let i = 0; i < NUM_ISLANDS; i++) mutateIsland(i, defaultAudio, -999);
+  programs.push({ name: 'living:0', program: islands[0].program, living: true });
   const livingIndex = programs.length - 1;
 
   let currentShader = 0;
@@ -1149,7 +1165,7 @@
 
   function getShaderSource(index) {
     if (programs[index] && programs[index].living) {
-      return livingSource;
+      return islands[currentIsland].source;
     }
     return shaders[index].frag;
   }
@@ -1251,13 +1267,16 @@
     const audio = getAudioData();
     const time = (performance.now() - startTime) / 1000;
 
-    // If we're on the living shader, let the music mutate it
+    // If we're on the living shader, evolve ALL islands (not just the visible one)
     if (programs[currentShader] && programs[currentShader].living) {
-      if (mutateLivingShader(audio, time)) {
-        programs[livingIndex].program = livingProgram;
-        // Auto-enable code overlay so you can see the mutations
-        codeVisible = true;
+      let anyMutated = false;
+      for (let i = 0; i < NUM_ISLANDS; i++) {
+        if (mutateIsland(i, audio, time)) anyMutated = true;
       }
+      // Always show the current island's program
+      programs[livingIndex].program = islands[currentIsland].program;
+      programs[livingIndex].name = 'living:' + currentIsland;
+      if (anyMutated) codeVisible = true;
     }
 
     const { program } = programs[currentShader];
@@ -1429,14 +1448,30 @@
     playlistEl.appendChild(div);
   });
 
-  // Skip tracks with up/down arrows
+  // Up/down: switch islands when on living shader, otherwise switch tracks
+  function switchIsland(dir) {
+    currentIsland = (currentIsland + dir + NUM_ISLANDS) % NUM_ISLANDS;
+    programs[livingIndex].program = islands[currentIsland].program;
+    programs[livingIndex].name = 'living:' + currentIsland;
+    showShaderName();
+    showTrackName('island ' + currentIsland, '');
+  }
+
   document.addEventListener('keydown', e => {
-    if (e.key === 'ArrowUp' && currentTrack >= 0) {
+    if (e.key === 'ArrowUp') {
       e.preventDefault();
-      playTrack((currentTrack - 1 + playlist.length) % playlist.length);
-    } else if (e.key === 'ArrowDown' && currentTrack >= 0) {
+      if (programs[currentShader] && programs[currentShader].living) {
+        switchIsland(-1);
+      } else if (currentTrack >= 0) {
+        playTrack((currentTrack - 1 + playlist.length) % playlist.length);
+      }
+    } else if (e.key === 'ArrowDown') {
       e.preventDefault();
-      playTrack((currentTrack + 1) % playlist.length);
+      if (programs[currentShader] && programs[currentShader].living) {
+        switchIsland(1);
+      } else if (currentTrack >= 0) {
+        playTrack((currentTrack + 1) % playlist.length);
+      }
     }
   });
 
