@@ -1,0 +1,1449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>voidwave</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+      color: #fff;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+    canvas.active {
+      cursor: none;
+    }
+    #drop-zone {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      transition: opacity 0.5s;
+    }
+    #drop-zone.hidden { opacity: 0; pointer-events: none; }
+    #drop-zone .prompt {
+      text-align: center;
+      opacity: 0.6;
+      font-size: 14px;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+    }
+    #drop-zone .prompt .title {
+      font-size: 24px;
+      margin-bottom: 16px;
+      opacity: 1;
+      letter-spacing: 6px;
+    }
+    #drop-zone .prompt .hint {
+      font-size: 11px;
+      opacity: 0.4;
+      margin-top: 8px;
+    }
+    #drop-zone .prompt .options {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin-top: 4px;
+    }
+    #drop-zone .prompt .option {
+      cursor: pointer;
+      padding: 8px 16px;
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 4px;
+      transition: border-color 0.2s, opacity 0.2s;
+      opacity: 0.7;
+    }
+    #drop-zone .prompt .option:hover {
+      border-color: rgba(255,255,255,0.5);
+      opacity: 1;
+    }
+    #drop-zone .prompt .option .label {
+      font-size: 13px;
+      letter-spacing: 2px;
+    }
+    #drop-zone .prompt .option .desc {
+      font-size: 10px;
+      opacity: 0.4;
+      margin-top: 4px;
+      letter-spacing: 1px;
+    }
+    #controls {
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      display: flex;
+      gap: 16px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      font-size: 11px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+    #controls:hover, #controls.show { opacity: 0.5; }
+    #controls span { cursor: pointer; }
+    #controls span:hover { opacity: 1; }
+    #shader-name {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      font-size: 12px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      opacity: 0;
+      transition: opacity 0.5s;
+      pointer-events: none;
+    }
+    #shader-name.show {
+      opacity: 0.6;
+      transition: opacity 0.2s;
+    }
+    #track-name {
+      position: fixed;
+      bottom: 50px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      font-size: 11px;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      opacity: 0;
+      transition: opacity 0.5s;
+      pointer-events: none;
+    }
+    #track-name.show {
+      opacity: 0.5;
+      transition: opacity 0.2s;
+    }
+    #playlist-section {
+      margin-top: 8px;
+      text-align: left;
+      max-height: 150px;
+      overflow-y: auto;
+    }
+    #playlist-section .track {
+      cursor: pointer;
+      padding: 5px 12px;
+      opacity: 0.5;
+      font-size: 11px;
+      letter-spacing: 1px;
+      border-left: 2px solid transparent;
+      transition: opacity 0.2s, border-color 0.2s;
+    }
+    #playlist-section .track:hover {
+      opacity: 0.9;
+      border-left-color: rgba(255,255,255,0.3);
+    }
+    #playlist-section .track .artist {
+      opacity: 0.4;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+
+  <div id="drop-zone">
+    <div class="prompt">
+      <div class="title">voidwave</div>
+      <div class="options">
+        <div class="option" id="btn-file">
+          <div class="label">drop audio file</div>
+          <div class="desc">or click here to browse</div>
+        </div>
+        <div class="option" id="btn-playlist">
+          <div class="label">playlist</div>
+          <div class="desc">curated for visualization</div>
+          <div id="playlist-section"></div>
+        </div>
+        <div class="option" id="btn-tab">
+          <div class="label">capture tab audio</div>
+          <div class="desc">youtube, spotify, soundcloud — anything</div>
+        </div>
+        <div class="option" id="btn-mic">
+          <div class="label">microphone</div>
+          <div class="desc">visualize the room</div>
+        </div>
+      </div>
+      <div class="hint">space: pause / evolve · ←→: shader · ↑↓: track · c: code · f: fullscreen</div>
+    </div>
+  </div>
+
+  <div id="controls">
+    <span id="btn-prev">← prev</span>
+    <span id="btn-next">next →</span>
+  </div>
+
+  <div id="shader-name"></div>
+  <div id="track-name"></div>
+
+  <script>
+  // ─── GLSL Shaders ────────────────────────────────────────────
+  // Each visualization is a fragment shader that receives:
+  //   u_resolution  — canvas size in pixels
+  //   u_time        — seconds since start
+  //   u_fft         — 512-wide texture of frequency data (0-1)
+  //   u_waveform    — 512-wide texture of time-domain waveform (-1 to 1, stored as 0-1)
+  //   u_bass        — average energy in low frequencies (0-1)
+  //   u_mid         — average energy in mid frequencies (0-1)
+  //   u_treble      — average energy in high frequencies (0-1)
+  //   u_energy      — overall energy (0-1)
+  //   u_feedback    — previous frame's output (for feedback loops)
+
+  const VERT_SHADER = `#version 300 es
+    in vec2 a_position;
+    out vec2 v_uv;
+    void main() {
+      v_uv = a_position * 0.5 + 0.5;
+      gl_Position = vec4(a_position, 0.0, 1.0);
+    }
+  `;
+
+  const shaders = [
+    {
+      name: "breath",
+      frag: `#version 300 es
+        precision highp float;
+        in vec2 v_uv;
+        out vec4 fragColor;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform float u_bass;
+        uniform float u_mid;
+        uniform float u_treble;
+        uniform float u_energy;
+        uniform sampler2D u_fft;
+        uniform sampler2D u_waveform;
+
+        void main() {
+          vec2 uv = (v_uv - 0.5) * 2.0;
+          uv.x *= u_resolution.x / u_resolution.y;
+          float dist = length(uv);
+          float angle = atan(uv.y, uv.x);
+
+          // Shared breathing — all rings expand and contract together on bass
+          float breath = u_bass * 0.15;
+
+          // Three concentric rings at fixed radius ratios, all breathing
+          float r1 = 0.35 + breath;
+          float r2 = 0.55 + breath;
+          float r3 = 0.75 + breath;
+
+          // Mirror-symmetric angle mapping: both sides of the circle
+          // sample the same data, so there's no seam at the atan wrap point
+          float symAngle = abs(angle) / 3.14159;
+
+          // Ring 1 (inner): waveform shape
+          float wave = texture(u_waveform, vec2(symAngle, 0.5)).r;
+          float ring1 = smoothstep(0.015, 0.0, abs(dist - r1 - (wave - 0.5) * 0.12));
+
+          // Ring 2 (mid): FFT shape
+          float freq = texture(u_fft, vec2(symAngle, 0.5)).r;
+          float ring2 = smoothstep(0.012, 0.0, abs(dist - r2 - freq * 0.15));
+
+          // Ring 3 (outer): smooth with gentle wobble
+          float wobble = sin(angle * 4.0 + u_time * 1.5) * 0.03 * u_mid;
+          float ring3 = smoothstep(0.01, 0.0, abs(dist - r3 - wobble));
+
+          // Color palette shifts with energy
+          vec3 col1 = vec3(0.1, 0.8, 0.6);  // teal
+          vec3 col2 = vec3(0.8, 0.2, 0.5);  // magenta
+          vec3 col3 = vec3(0.2, 0.4, 1.0);  // blue
+
+          float hueShift = u_time * 0.1 + u_energy;
+          vec3 baseColor = mix(col3, col2, sin(hueShift) * 0.5 + 0.5);
+
+          vec3 color = vec3(0.0);
+          color += ring1 * col1 * 1.5;
+          color += ring2 * col2 * (0.8 + freq);
+          color += ring3 * col3 * 1.2;
+
+          // Glow from center, pulsing with bass
+          color += baseColor * 0.06 * u_energy / (dist + 0.3);
+
+          // Soft connections between rings — fills the space between with faint color
+          float between12 = smoothstep(r1, r2, dist) * smoothstep(r2, r1, dist) * 4.0;
+          float between23 = smoothstep(r2, r3, dist) * smoothstep(r3, r2, dist) * 4.0;
+          color += baseColor * between12 * 0.03 * u_energy;
+          color += col1 * between23 * 0.02 * u_energy;
+
+          // Vignette
+          color *= smoothstep(1.4, 0.3, dist);
+
+          fragColor = vec4(color, 1.0);
+        }
+      `
+    },
+    {
+      name: "cascade",
+      frag: `#version 300 es
+        precision highp float;
+        in vec2 v_uv;
+        out vec4 fragColor;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform float u_bass;
+        uniform float u_mid;
+        uniform float u_treble;
+        uniform float u_energy;
+        uniform sampler2D u_fft;
+        uniform sampler2D u_waveform;
+
+        void main() {
+          vec2 uv = v_uv;
+          vec3 color = vec3(0.0);
+
+          // Vertical bars driven by FFT — a waterfall of frequency
+          float barCount = 64.0;
+          float barIndex = floor(uv.x * barCount);
+          float barUV = barIndex / barCount;
+          float freq = texture(u_fft, vec2(barUV, 0.5)).r;
+
+          // Bars rise from bottom, height = frequency magnitude
+          float barHeight = freq * (0.6 + u_energy * 0.4);
+          float inBar = step(1.0 - uv.y, barHeight);
+
+          // Color gradient across the spectrum
+          float t = barUV;
+          vec3 barColor = mix(
+            vec3(0.0, 0.3, 1.0),
+            vec3(1.0, 0.1, 0.3),
+            t
+          );
+          barColor = mix(barColor, vec3(0.0, 1.0, 0.5), sin(t * 6.2831 + u_time) * 0.3 + 0.3);
+
+          // Brightness peaks at the top of each bar
+          float topGlow = smoothstep(0.05, 0.0, abs((1.0 - uv.y) - barHeight)) * freq * 2.0;
+
+          color += inBar * barColor * 0.4;
+          color += topGlow * barColor;
+
+          // Horizontal waveform overlay in the middle
+          float wave = texture(u_waveform, vec2(uv.x, 0.5)).r;
+          float waveLine = smoothstep(0.006, 0.0, abs(uv.y - 0.5 - (wave - 0.5) * 0.3));
+          color += waveLine * vec3(1.0, 0.9, 0.8) * 0.8;
+
+          // Scanline effect
+          color *= 0.95 + 0.05 * sin(uv.y * u_resolution.y * 1.5);
+
+          fragColor = vec4(color, 1.0);
+        }
+      `
+    },
+    {
+      name: "tunnel",
+      frag: `#version 300 es
+        precision highp float;
+        in vec2 v_uv;
+        out vec4 fragColor;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform float u_bass;
+        uniform float u_mid;
+        uniform float u_treble;
+        uniform float u_energy;
+        uniform sampler2D u_fft;
+
+        void main() {
+          vec2 uv = (v_uv - 0.5) * 2.0;
+          uv.x *= u_resolution.x / u_resolution.y;
+
+          float dist = length(uv);
+          float angle = atan(uv.y, uv.x);
+
+          // Tunnel coordinates
+          float tunnelZ = 1.0 / (dist + 0.01) + u_time * (0.5 + u_bass * 1.5);
+          float tunnelAngle = angle / 3.14159;
+
+          // Sample FFT with tunnel coordinates for reactive walls
+          float freq1 = texture(u_fft, vec2(fract(tunnelZ * 0.1), 0.5)).r;
+          float freq2 = texture(u_fft, vec2(fract(tunnelAngle + u_time * 0.05), 0.5)).r;
+
+          // Rings receding into the tunnel
+          float rings = sin(tunnelZ * 3.0) * 0.5 + 0.5;
+          rings = pow(rings, 4.0 + u_bass * 8.0);
+
+          // Angular segments
+          float segments = sin(angle * (3.0 + floor(u_mid * 5.0)) + tunnelZ * 0.5) * 0.5 + 0.5;
+          segments = pow(segments, 2.0);
+
+          // Compose
+          float pattern = rings * 0.7 + segments * 0.3 + freq1 * 0.3;
+
+          // Color
+          vec3 col = vec3(0.0);
+          col.r = pattern * (0.5 + 0.5 * sin(u_time * 0.3));
+          col.g = pattern * (0.5 + 0.5 * sin(u_time * 0.3 + 2.094));
+          col.b = pattern * (0.5 + 0.5 * sin(u_time * 0.3 + 4.189));
+
+          // Glow at center
+          col += vec3(0.3, 0.5, 0.8) * u_energy * 0.3 / (dist + 0.1);
+
+          // Depth fade
+          col *= smoothstep(2.0, 0.3, dist);
+
+          // Bass flash
+          col += vec3(0.1, 0.0, 0.15) * u_bass * u_bass * 2.0;
+
+          fragColor = vec4(col, 1.0);
+        }
+      `
+    },
+    {
+      name: "nova",
+      frag: `#version 300 es
+        precision highp float;
+        in vec2 v_uv;
+        out vec4 fragColor;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform float u_bass;
+        uniform float u_mid;
+        uniform float u_treble;
+        uniform float u_energy;
+        uniform sampler2D u_fft;
+        uniform sampler2D u_waveform;
+
+        // Simplex-ish noise
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(
+            mix(hash(i), hash(i + vec2(1,0)), f.x),
+            mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), f.x),
+            f.y
+          );
+        }
+        float fbm(vec2 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 5; i++) {
+            v += a * noise(p);
+            p *= 2.0;
+            a *= 0.5;
+          }
+          return v;
+        }
+
+        void main() {
+          vec2 uv = (v_uv - 0.5) * 2.0;
+          uv.x *= u_resolution.x / u_resolution.y;
+
+          float dist = length(uv);
+          float angle = atan(uv.y, uv.x);
+
+          // Nebula: warped FBM noise driven by audio
+          vec2 warp = vec2(
+            fbm(uv * 2.0 + u_time * 0.15 + u_bass * 0.5),
+            fbm(uv * 2.0 + u_time * 0.12 + vec2(5.2, 1.3))
+          );
+          float nebula = fbm(uv * 1.5 + warp * (1.0 + u_energy));
+
+          // Stars — frequency-reactive points
+          float stars = 0.0;
+          for (float i = 0.0; i < 8.0; i++) {
+            float fi = i + 1.0;
+            float freq = texture(u_fft, vec2(i / 16.0, 0.5)).r;
+            float starAngle = u_time * 0.1 * fi + i * 0.785;
+            float starDist = 0.3 + freq * 0.6;
+            vec2 starPos = vec2(cos(starAngle), sin(starAngle)) * starDist;
+            float d = length(uv - starPos);
+            stars += freq * 0.02 / (d + 0.01);
+          }
+
+          // Color
+          vec3 col = vec3(0.0);
+          vec3 nebulaCol = mix(
+            vec3(0.1, 0.0, 0.2),
+            vec3(0.0, 0.2, 0.5),
+            nebula
+          );
+          nebulaCol = mix(nebulaCol, vec3(0.5, 0.1, 0.3), u_bass * nebula);
+
+          col += nebulaCol * (0.5 + u_energy * 0.5);
+          col += stars * vec3(0.8, 0.9, 1.0);
+
+          // Central glow
+          col += vec3(0.2, 0.3, 0.6) * u_energy * 0.15 / (dist * dist + 0.05);
+
+          // Waveform ring
+          float waveAngle = angle / 6.2831 + 0.5;
+          float wave = texture(u_waveform, vec2(waveAngle, 0.5)).r;
+          float waveRing = smoothstep(0.005, 0.0, abs(dist - 0.4 - (wave - 0.5) * 0.2));
+          col += waveRing * vec3(0.6, 0.8, 1.0) * 0.6;
+
+          fragColor = vec4(col, 1.0);
+        }
+      `
+    },
+    {
+      name: "void",
+      frag: `#version 300 es
+        precision highp float;
+        in vec2 v_uv;
+        out vec4 fragColor;
+
+        uniform vec2 u_resolution;
+        uniform float u_time;
+        uniform float u_bass;
+        uniform float u_mid;
+        uniform float u_treble;
+        uniform float u_energy;
+        uniform sampler2D u_fft;
+        uniform sampler2D u_feedback;
+
+        void main() {
+          vec2 uv = (v_uv - 0.5) * 2.0;
+          uv.x *= u_resolution.x / u_resolution.y;
+
+          float dist = length(uv);
+          float angle = atan(uv.y, uv.x);
+
+          // Feedback with zoom and rotation — the Milkdrop secret sauce
+          vec2 fbUV = v_uv - 0.5;
+          float fbZoom = 0.97 - u_bass * 0.02;
+          float fbRot = 0.01 + u_mid * 0.02;
+          mat2 rot = mat2(cos(fbRot), -sin(fbRot), sin(fbRot), cos(fbRot));
+          fbUV = rot * fbUV * fbZoom + 0.5;
+          vec3 fb = texture(u_feedback, fbUV).rgb * 0.92;
+
+          // New content: frequency-driven geometry
+          float pattern = 0.0;
+
+          // Concentric reactive shapes
+          for (float i = 1.0; i < 6.0; i++) {
+            float freq = texture(u_fft, vec2(i / 12.0, 0.5)).r;
+            float sides = 3.0 + i;
+            float r = 0.1 * i + freq * 0.2;
+
+            // Polygon distance
+            float a = angle + u_time * 0.2 * (mod(i, 2.0) == 0.0 ? 1.0 : -1.0);
+            float segAngle = 6.2831 / sides;
+            float polyDist = cos(floor(0.5 + a / segAngle) * segAngle - a) * dist;
+            float edge = smoothstep(0.015, 0.0, abs(polyDist - r));
+
+            pattern += edge * freq;
+          }
+
+          vec3 col = fb;
+
+          // Add new geometry with audio-reactive color
+          vec3 newCol = vec3(
+            0.5 + 0.5 * sin(u_time * 0.5),
+            0.5 + 0.5 * sin(u_time * 0.5 + 2.094),
+            0.5 + 0.5 * sin(u_time * 0.5 + 4.189)
+          );
+          col += pattern * newCol * 1.5;
+
+          // Center flash on beat
+          col += newCol * u_bass * u_bass * 0.3 / (dist + 0.2);
+
+          fragColor = vec4(col, 1.0);
+        }
+      `
+    }
+  ];
+
+  // ─── Living Shader: the music writes the code ───────────────
+
+  // Code genes — fragments of GLSL that the music selects from
+  // Each gene has a weight function: how much the current audio wants it
+  const genes = {
+    coords: [
+      { w: a => 0.3,                          code: 'vec2 p = uv;',                                      label: 'raw space' },
+      { w: a => a.bass * 0.8,                 code: 'vec2 p = vec2(length(uv), atan(uv.y, uv.x));',     label: 'polar collapse' },
+      { w: a => a.mid * 0.7,                  code: 'vec2 p = fract(uv * (2.0+u_mid*4.0)) - 0.5;',      label: 'fracture field' },
+      { w: a => a.treble * 0.9,               code: 'vec2 p = uv / (dot(uv,uv) + 0.1);',                label: 'inversion' },
+      { w: a => a.energy * 0.8,               code: 'vec2 p = vec2(uv.x+sin(uv.y*8.0+u_time)*u_bass*0.4, uv.y+cos(uv.x*8.0+u_time)*u_bass*0.4);', label: 'liquid dream' },
+      { w: a => a.bass*a.treble*2.0,          code: 'float r=length(uv); float a2=atan(uv.y,uv.x)+sin(r*6.0-u_time*2.0)*u_bass; vec2 p=vec2(r,a2);', label: 'spiral sink' },
+      { w: a => (1.0-a.energy)*0.6,           code: 'vec2 p = uv * mat2(cos(u_time*0.1),sin(u_time*0.1),-sin(u_time*0.1),cos(u_time*0.1));', label: 'slow rotation' },
+      { w: a => a.mid*a.bass*1.5,             code: 'vec2 p = abs(uv) - 0.5;',                           label: 'mirror fold' },
+    ],
+    shapes: [
+      { w: a => (1.0-a.energy)*0.5,           code: 'float d = length(p);',                               label: 'void distance' },
+      { w: a => a.bass*a.mid*1.5,             code: 'float a3=atan(p.y,p.x); float sides=3.0+floor(u_mid*5.0); float d=cos(floor(.5+a3*sides/6.283)*6.283/sides-a3)*length(p);', label: 'morphing polygon' },
+      { w: a => a.treble * 0.9,               code: 'float d = length(p) - 0.2*cos(atan(p.y,p.x)*(3.0+floor(u_treble*8.0))+u_time*2.0);', label: 'petal bloom' },
+      { w: a => a.energy * 0.7,               code: 'float d = min(length(p-vec2(0.3,0)*u_bass), length(p+vec2(0.3,0)*u_bass));', label: 'mitosis' },
+      { w: a => a.mid * 0.8,                  code: 'float d = length(p*p);',                              label: 'parabolic lens' },
+      { w: a => a.bass * 0.7,                 code: 'float d = max(length(p)-0.5, 0.2-length(p));',       label: 'annulus' },
+      { w: a => a.treble*a.mid*2.0,           code: 'float d = dot(sin(p*6.0+u_time), cos(p.yx*6.0+u_time))*0.5+0.5;', label: 'interference' },
+      { w: a => a.energy*a.bass*1.5,          code: 'float d = length(sin(p*3.14159));',                   label: 'sine cage' },
+    ],
+    ops: [
+      { w: a => 0.3,                          code: 'float shape = pow(0.01/abs(d-0.3-u_bass*0.3), 1.2);', label: 'neon edge' },
+      { w: a => a.bass * 0.8,                 code: 'float shape = pow(0.015/abs(d-0.3-u_bass*0.2), 2.0);', label: 'hot wire' },
+      { w: a => a.mid * 0.7,                  code: 'float shape = pow(0.005/abs(sin(d*12.0-u_time*2.0)*0.5), 1.0);', label: 'standing wave' },
+      { w: a => a.treble * 0.8,               code: 'float shape = pow(0.01/abs(fract(d*5.0-u_time*0.3)-0.5), 1.0);', label: 'pulse rings' },
+      { w: a => a.energy * 0.9,               code: 'float shape = smoothstep(0.0, 0.02, d) * pow(0.02/abs(d-0.4-u_bass*0.3), 1.5);', label: 'corona' },
+      { w: a => (1.0-a.energy)*0.6,           code: 'float shape = exp(-d*3.0) * (1.0+sin(d*20.0-u_time)*0.3);', label: 'breath fog' },
+      { w: a => a.bass*a.treble*2.0,          code: 'float shape = pow(0.02/(abs(d-0.2-u_bass*0.2)+abs(d-0.5-u_treble*0.2)), 1.0);', label: 'double helix' },
+    ],
+    colors: [
+      { w: a => (1.0-a.energy)*0.4,           code: 'vec3 col = vec3(0.05, 0.1, 0.2+shape*0.3) * (shape+0.1);', label: 'deep ocean' },
+      { w: a => a.bass * 0.7,                 code: 'vec3 col = shape * vec3(1.0, 0.3-d*0.3, 0.1) * (1.0+u_bass);', label: 'lava' },
+      { w: a => a.treble * 0.8,               code: 'vec3 col = shape * (0.5+0.5*cos(d*8.0+u_time*0.5+vec3(0,2.1,4.2)));', label: 'prismatic' },
+      { w: a => a.mid * 0.7,                  code: 'vec3 col = shape * mix(vec3(0.0,1.0,0.6), vec3(0.6,0.0,1.0), sin(d*4.0+u_time)*0.5+0.5);', label: 'aurora' },
+      { w: a => a.energy * 0.8,               code: 'vec3 col = shape * vec3(u_bass, u_mid*0.7, u_treble) * 2.0;', label: 'spectrum map' },
+      { w: a => a.bass*a.mid*1.5,             code: 'float hue=d*2.0+u_time*0.2; vec3 col=shape*(0.5+0.5*vec3(sin(hue),sin(hue+2.094),sin(hue+4.189)));', label: 'chromatic spiral' },
+      { w: a => a.treble*(1.0-a.bass)*1.5,    code: 'vec3 col = shape * vec3(0.9,0.95,1.0) * (1.0+u_treble);',  label: 'white hot' },
+    ],
+    mods: [
+      { w: a => 0.2,                          code: '',                                                    label: 'naked' },
+      { w: a => a.bass * 0.6,                 code: 'col += vec3(0.3,0.05,0.1) * u_bass*u_bass*u_bass / (length(uv)+0.05);', label: '+ bass supernova' },
+      { w: a => a.energy * 0.9,               code: 'col = mix(col, texture(u_feedback, v_uv*0.97+0.015).rgb*0.93, 0.6);', label: '+ feedback echo' },
+      { w: a => a.mid * 0.7,                  code: 'float w2=texture(u_waveform,vec2(abs(atan(uv.y,uv.x))/3.14,0.5)).r; col+=vec3(0.4,0.7,0.6)*pow(smoothstep(0.01,0.0,abs(length(uv)-0.35-(w2-0.5)*0.25)),1.0)*0.8;', label: '+ waveform ghost' },
+      { w: a => a.treble * 0.8,               code: 'for(float i=0.0;i<4.0;i++){float f=texture(u_fft,vec2(i/8.0,0.5)).r; float a4=u_time*0.3+i*1.57; col+=vec3(0.3,0.5,0.8)*f*0.02/(length(uv-vec2(cos(a4),sin(a4))*f*0.6)+0.01);}', label: '+ orbiting sparks' },
+      { w: a => a.bass*a.energy*1.5,          code: 'col *= 1.0 + u_bass*vec3(0.5,0.1,0.2)*sin(u_time*8.0)*step(0.7,u_bass);', label: '+ beat flash' },
+      { w: a => a.mid*a.treble*1.5,           code: 'col += vec3(0.2,0.3,0.5) * pow(1.0-length(uv),3.0) * u_energy;', label: '+ core glow' },
+    ],
+  };
+
+  // Weighted random selection — higher-scoring genes are MORE LIKELY
+  // but not guaranteed. Keeps things surprising.
+  function selectGene(category, audio, rand) {
+    const weights = category.map(g => Math.max(0.05, g.w(audio) + getFitnessBonus(g.label)));
+    const total = weights.reduce((a, b) => a + b, 0);
+
+    let threshold = rand * total;
+    for (let i = 0; i < weights.length; i++) {
+      threshold -= weights[i];
+      if (threshold <= 0) {
+        const gene = category[i];
+        // Inject random parameters so the same gene never looks identical
+        let code = gene.code;
+        code = code.replace(/\b(\d+)\.0\b/g, (m, n) => {
+          // Mutate integer constants slightly: 3.0 → 2.7, 6.0 → 6.4, etc.
+          const v = parseFloat(n) + (Math.random() - 0.5) * 1.5;
+          return v.toFixed(1);
+        });
+        return { ...gene, code };
+      }
+    }
+    const gene = category[category.length - 1];
+    return { ...gene };
+  }
+
+  // Assemble a complete shader from selected genes
+  function assembleLivingShader(selections, audioComment) {
+    const lines = [
+      '#version 300 es',
+      'precision highp float;',
+      'in vec2 v_uv;',
+      'out vec4 fragColor;',
+      'uniform vec2 u_resolution;',
+      'uniform float u_time;',
+      'uniform float u_bass;',
+      'uniform float u_mid;',
+      'uniform float u_treble;',
+      'uniform float u_energy;',
+      'uniform sampler2D u_fft;',
+      'uniform sampler2D u_waveform;',
+      'uniform sampler2D u_feedback;',
+      '',
+      'void main() {',
+      '  vec2 uv = (v_uv - 0.5) * 2.0;',
+      '  uv.x *= u_resolution.x / u_resolution.y;',
+      audioComment || '',
+      '',
+      '  // ' + selections.coords.label,
+      '  ' + selections.coords.code,
+      '',
+      '  // ' + selections.shapes.label,
+      '  ' + selections.shapes.code,
+      '',
+      '  // ' + selections.ops.label,
+      '  ' + selections.ops.code,
+      '',
+      '  // ' + selections.colors.label,
+      '  ' + selections.colors.code,
+      '',
+    ];
+
+    if (selections.mods.code) {
+      lines.push('  // ' + selections.mods.label);
+      lines.push('  ' + selections.mods.code);
+      lines.push('');
+    }
+
+    lines.push('  fragColor = vec4(col, 1.0);');
+    lines.push('}');
+
+    return lines.join('\n');
+  }
+
+  // ─── Evolution: fitness with decay + novelty ────────────────
+  const fitness = {};     // label → decaying fitness score
+  const recentGenes = []; // last N generations of gene labels, for novelty
+  const RECENT_MEMORY = 8;
+
+  function likeCurrentShader() {
+    if (!livingSelections) return;
+    for (const category of Object.keys(livingSelections)) {
+      const label = livingSelections[category].label;
+      fitness[label] = (fitness[label] || 0) + 1.0;
+    }
+    lastMutationTime = (performance.now() - startTime) / 1000;
+    const totalLikes = Object.values(fitness).reduce((a,b) => a+b, 0);
+    showTrackName('', 'evolved ×' + Math.round(totalLikes));
+  }
+
+  function decayFitness() {
+    // Everything fades — old preferences lose grip
+    for (const label of Object.keys(fitness)) {
+      fitness[label] *= 0.7;  // 30% decay per generation
+      if (fitness[label] < 0.05) delete fitness[label];
+    }
+  }
+
+  function recordGeneration(selections) {
+    const labels = new Set();
+    for (const category of Object.keys(selections)) {
+      labels.add(selections[category].label);
+    }
+    recentGenes.push(labels);
+    if (recentGenes.length > RECENT_MEMORY) recentGenes.shift();
+  }
+
+  function getNoveltyBonus(label) {
+    // How many of the last N generations contained this gene?
+    let appearances = 0;
+    for (const gen of recentGenes) {
+      if (gen.has(label)) appearances++;
+    }
+    // Genes we haven't seen recently get a big bonus
+    // Genes we've seen a lot get penalized
+    return (1.0 - appearances / Math.max(1, recentGenes.length)) * 0.6;
+  }
+
+  function getFitnessBonus(label) {
+    const likes = fitness[label] || 0;
+    const novelty = getNoveltyBonus(label);
+    // Fitness is a gentle nudge (capped), novelty is a strong pull
+    return Math.min(likes * 0.3, 0.6) + novelty;
+  }
+
+  // Living shader state
+  let livingProgram = null;
+  let livingSource = '';
+  let livingSelections = null;
+  let lastMutationTime = 0;
+  const MUTATION_INTERVAL = 1.5; // seconds between mutations
+
+  function mutateLivingShader(audio, time) {
+    if (time - lastMutationTime < MUTATION_INTERVAL) return false;
+
+    // Decay old preferences — nothing lives forever
+    decayFitness();
+
+    // Fresh random values each mutation
+    const newSelections = {
+      coords: selectGene(genes.coords, audio, Math.random()),
+      shapes: selectGene(genes.shapes, audio, Math.random()),
+      ops:    selectGene(genes.ops, audio, Math.random()),
+      colors: selectGene(genes.colors, audio, Math.random()),
+      mods:   selectGene(genes.mods, audio, Math.random()),
+    };
+
+    // Inject live audio values as constants into the code comments
+    // so the displayed code shows the actual numbers driving the mutation
+    const audioComment = `  // audio: bass=${audio.bass.toFixed(2)} mid=${audio.mid.toFixed(2)} treble=${audio.treble.toFixed(2)}`;
+
+    const newSource = assembleLivingShader(newSelections, audioComment);
+    const newProgram = createProgram(VERT_SHADER, newSource);
+
+    if (newProgram) {
+      if (livingProgram) gl.deleteProgram(livingProgram);
+      livingProgram = newProgram;
+      livingSource = newSource;
+      livingSelections = newSelections;
+      lastMutationTime = time;
+      recordGeneration(newSelections);
+      return true;
+    }
+    return false;
+  }
+
+  // ─── WebGL Setup ─────────────────────────────────────────────
+
+  const canvas = document.getElementById('canvas');
+  const gl = canvas.getContext('webgl2', { antialias: false, alpha: false });
+
+  if (!gl) {
+    document.getElementById('drop-zone').innerHTML =
+      '<div class="prompt">WebGL 2 not supported in this browser</div>';
+    throw new Error('WebGL 2 required');
+  }
+
+  // Fullscreen quad
+  const quadVerts = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
+  const quadBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, quadVerts, gl.STATIC_DRAW);
+
+  // Compile shaders
+  function compileShader(type, source) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, source);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+      console.error('Shader error:', gl.getShaderInfoLog(s));
+      return null;
+    }
+    return s;
+  }
+
+  function createProgram(vertSrc, fragSrc) {
+    const v = compileShader(gl.VERTEX_SHADER, vertSrc);
+    const f = compileShader(gl.FRAGMENT_SHADER, fragSrc);
+    if (!v || !f) return null;
+    const p = gl.createProgram();
+    gl.attachShader(p, v);
+    gl.attachShader(p, f);
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      console.error('Program error:', gl.getProgramInfoLog(p));
+      return null;
+    }
+    return p;
+  }
+
+  // Compile all shader programs
+  const programs = shaders.map(s => {
+    const prog = createProgram(VERT_SHADER, s.frag);
+    if (!prog) console.error(`Failed to compile shader: ${s.name}`);
+    return { name: s.name, program: prog };
+  }).filter(p => p.program);
+
+  // Add the living shader as the last entry
+  // Initialize with a calm default so it has something to show
+  const defaultAudio = { bass: 0, mid: 0, treble: 0, energy: 0 };
+  mutateLivingShader(defaultAudio, -999);
+  programs.push({ name: 'living', program: livingProgram, living: true });
+  const livingIndex = programs.length - 1;
+
+  let currentShader = 0;
+
+  // ─── Audio Textures ──────────────────────────────────────────
+
+  function createDataTexture(width) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, width, 1, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return tex;
+  }
+
+  const FFT_SIZE = 512;
+  const fftTexture = createDataTexture(FFT_SIZE / 2);
+  const waveTexture = createDataTexture(FFT_SIZE / 2);
+
+  // ─── Feedback Framebuffers (ping-pong) ───────────────────────
+
+  let fbWidth = 0, fbHeight = 0;
+  let fbTextures = [null, null];
+  let framebuffers = [null, null];
+  let fbIndex = 0;
+
+  function setupFramebuffers(w, h) {
+    fbWidth = w; fbHeight = h;
+    for (let i = 0; i < 2; i++) {
+      if (fbTextures[i]) gl.deleteTexture(fbTextures[i]);
+      if (framebuffers[i]) gl.deleteFramebuffer(framebuffers[i]);
+
+      fbTextures[i] = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, fbTextures[i]);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      framebuffers[i] = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffers[i]);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fbTextures[i], 0);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // ─── Audio Setup ─────────────────────────────────────────────
+
+  let audioCtx = null;
+  let analyser = null;
+  let fftData = null;
+  let waveData = null;
+  let audioSource = null;
+  let audioElement = null;
+
+  function initAudio() {
+    if (audioCtx) return;
+    audioCtx = new AudioContext();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = FFT_SIZE;
+    analyser.smoothingTimeConstant = 0.4;
+    analyser.minDecibels = -90;
+    analyser.maxDecibels = -10;
+    fftData = new Uint8Array(analyser.frequencyBinCount);
+    waveData = new Uint8Array(analyser.frequencyBinCount);
+  }
+
+  // ─── Playlist ──────────────────────────────────────────────
+
+  const playlist = [
+    { artist: 'Daft Punk', title: 'Daftendirekt', src: 'music/01 Daftendirekt.m4a' },
+    { artist: 'Kevin MacLeod', title: 'Neon Laser Horizon', src: 'music/Neon Laser Horizon.mp3' },
+    { artist: 'Kevin MacLeod', title: 'Deep and Dirty', src: 'music/Deep and Dirty.mp3' },
+    { artist: 'Kevin MacLeod', title: 'Raving Energy', src: 'music/Raving Energy.mp3' },
+    { artist: 'Kevin MacLeod', title: 'Brain Dance', src: 'music/Brain Dance.mp3' },
+    { artist: 'Kevin MacLeod', title: 'Ethernight Club', src: 'music/Ethernight Club.mp3' },
+    { artist: 'Kevin MacLeod', title: 'Voxel Revolution', src: 'music/Voxel Revolution.mp3' },
+    { artist: 'Kevin MacLeod', title: 'Newer Wave', src: 'music/Newer Wave.mp3' },
+    { artist: 'Kevin MacLeod', title: 'Galactic Rap', src: 'music/Galactic Rap.mp3' },
+  ];
+
+  let currentTrack = -1;
+
+  let trackNameTimeout;
+  function showTrackName(artist, title) {
+    const el = document.getElementById('track-name');
+    el.textContent = `${artist} — ${title}`;
+    el.classList.add('show');
+    clearTimeout(trackNameTimeout);
+    trackNameTimeout = setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  function startPlayback(src, artist, title) {
+    initAudio();
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.remove();
+    }
+    if (audioSource) audioSource.disconnect();
+
+    audioElement = new Audio();
+    audioElement.crossOrigin = 'anonymous';
+    audioElement.src = src;
+    audioSource = audioCtx.createMediaElementSource(audioElement);
+    audioSource.connect(analyser);
+    analyser.connect(audioCtx.destination);
+    audioElement.play();
+
+    // Auto-advance to next track
+    audioElement.addEventListener('ended', () => {
+      if (currentTrack >= 0) playTrack((currentTrack + 1) % playlist.length);
+    });
+
+    document.getElementById('drop-zone').classList.add('hidden');
+    document.getElementById('controls').classList.add('show');
+    canvas.classList.add('active');
+    showShaderName();
+    if (artist && title) showTrackName(artist, title);
+  }
+
+  function playTrack(index) {
+    currentTrack = index;
+    const track = playlist[index];
+    startPlayback(track.src, track.artist, track.title);
+  }
+
+  function connectFile(file) {
+    currentTrack = -1;
+    startPlayback(URL.createObjectURL(file), file.name.replace(/\.[^.]+$/, ''), '');
+  }
+
+  async function connectMic() {
+    initAudio();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: { exact: false },
+          noiseSuppression: { exact: false },
+          autoGainControl: { exact: false },
+        }
+      });
+      // Verify the browser actually honored our constraints
+      const settings = stream.getAudioTracks()[0].getSettings();
+      console.log('Mic settings:', settings);
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      // Don't connect to destination — avoids feedback
+
+      document.getElementById('drop-zone').classList.add('hidden');
+      document.getElementById('controls').classList.add('show');
+      canvas.classList.add('active');
+      showShaderName();
+    } catch (e) {
+      console.error('Mic access denied:', e);
+    }
+  }
+
+  async function connectTab() {
+    initAudio();
+    try {
+      // getDisplayMedia with audio captures system/tab audio digitally
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,   // required by the API, but we won't use it
+        audio: true,
+      });
+
+      // Stop the video track — we only want audio
+      stream.getVideoTracks().forEach(t => t.stop());
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      // Don't connect to destination — the audio is already playing in the other tab
+
+      // Clean up when the user stops sharing
+      stream.getAudioTracks()[0].addEventListener('ended', () => {
+        document.getElementById('drop-zone').classList.remove('hidden');
+        document.getElementById('controls').classList.remove('show');
+        canvas.classList.remove('active');
+      });
+
+      document.getElementById('drop-zone').classList.add('hidden');
+      document.getElementById('controls').classList.add('show');
+      canvas.classList.add('active');
+      showShaderName();
+    } catch (e) {
+      console.error('Tab capture denied:', e);
+    }
+  }
+
+  // Hidden file input for the browse button
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'audio/*';
+  fileInput.addEventListener('change', () => {
+    if (fileInput.files[0]) connectFile(fileInput.files[0]);
+  });
+
+  // ─── Audio Analysis ──────────────────────────────────────────
+
+  function getAudioData() {
+    if (!analyser) return { bass: 0, mid: 0, treble: 0, energy: 0 };
+
+    analyser.getByteFrequencyData(fftData);
+    analyser.getByteTimeDomainData(waveData);
+
+    // Update textures
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fftTexture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fftData.length, 1, gl.RED, gl.UNSIGNED_BYTE, fftData);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, waveTexture);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, waveData.length, 1, gl.RED, gl.UNSIGNED_BYTE, waveData);
+
+    // Band energies
+    const binCount = fftData.length;
+    const bassEnd = Math.floor(binCount * 0.1);
+    const midEnd = Math.floor(binCount * 0.4);
+
+    let bass = 0, mid = 0, treble = 0;
+    for (let i = 0; i < binCount; i++) {
+      const v = fftData[i] / 255;
+      if (i < bassEnd) bass += v;
+      else if (i < midEnd) mid += v;
+      else treble += v;
+    }
+    bass /= bassEnd;
+    mid /= (midEnd - bassEnd);
+    treble /= (binCount - midEnd);
+    const energy = (bass + mid + treble) / 3;
+
+    return { bass, mid, treble, energy };
+  }
+
+  // ─── Code Overlay (proprioception of thought-space) ─────────
+
+  // Compositing shader: blends the code text into the visualization
+  const COMPOSITE_FRAG = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    out vec4 fragColor;
+
+    uniform sampler2D u_scene;
+    uniform sampler2D u_code;
+    uniform float u_time;
+    uniform float u_bass;
+    uniform float u_energy;
+    uniform float u_codeOpacity;
+    uniform sampler2D u_fft;
+
+    void main() {
+      vec3 scene = texture(u_scene, v_uv).rgb;
+      vec4 code = texture(u_code, v_uv);
+
+      // The code text alpha — characters are white on transparent
+      float textAlpha = code.a;
+
+      // Pulse individual characters with frequency data based on x position
+      float freq = texture(u_fft, vec2(v_uv.x, 0.5)).r;
+
+      // Code color: picks up the scene's color beneath it, ghostly
+      vec3 sceneGlow = scene + vec3(0.15, 0.2, 0.3);
+      vec3 codeColor = mix(
+        vec3(0.3, 0.5, 0.4),            // base: dim terminal green
+        sceneGlow,                        // reactive: absorbs scene color
+        0.3 + freq * 0.5
+      );
+
+      // Brightness pulses with bass on the beat
+      float pulse = 1.0 + u_bass * 0.6;
+      codeColor *= pulse;
+
+      // Fade: code is most visible in darker areas of the scene
+      float sceneBrightness = dot(scene, vec3(0.299, 0.587, 0.114));
+      float visibility = u_codeOpacity * (0.3 + 0.7 * (1.0 - sceneBrightness));
+
+      // Subtle scanline on the text
+      float scanline = 0.9 + 0.1 * sin(v_uv.y * 800.0 + u_time * 2.0);
+
+      vec3 final = mix(scene, codeColor * scanline, textAlpha * visibility);
+      fragColor = vec4(final, 1.0);
+    }
+  `;
+
+  const compositeProgram = createProgram(VERT_SHADER, COMPOSITE_FRAG);
+  if (!compositeProgram) console.error('Composite shader failed to compile');
+
+  // Simple passthrough blit shader
+  const BLIT_FRAG = `#version 300 es
+    precision highp float;
+    in vec2 v_uv;
+    out vec4 fragColor;
+    uniform sampler2D u_scene;
+    void main() { fragColor = texture(u_scene, v_uv); }
+  `;
+  const blitProgram = createProgram(VERT_SHADER, BLIT_FRAG);
+
+  // Offscreen canvas for rendering code as text
+  const codeCanvas = document.createElement('canvas');
+  const codeCtx = codeCanvas.getContext('2d');
+  const codeTexture = gl.createTexture();
+
+  let codeScrollOffset = 0;
+  let codeVisible = false;  // toggle with 'c' key
+  let currentCodeText = '';
+
+  function getShaderSource(index) {
+    if (programs[index] && programs[index].living) {
+      return livingSource;
+    }
+    return shaders[index].frag;
+  }
+
+  function renderCodeTexture(time, bass, energy) {
+    const w = canvas.width;
+    const h = canvas.height;
+
+    if (codeCanvas.width !== w || codeCanvas.height !== h) {
+      codeCanvas.width = w;
+      codeCanvas.height = h;
+    }
+
+    codeCtx.clearRect(0, 0, w, h);
+
+    const source = getShaderSource(currentShader);
+    const lines = source.split('\n');
+
+    // Font size scales with canvas, but stays readable
+    const fontSize = Math.max(10, Math.min(14, w / 120));
+    const lineHeight = fontSize * 1.6;
+    codeCtx.font = `${fontSize}px 'Courier New', monospace`;
+
+    // Scroll speed reacts to energy — music drives the reading pace
+    codeScrollOffset += (0.3 + energy * 1.5) * 0.5;
+
+    // Total height of all text
+    const totalHeight = lines.length * lineHeight + h;
+
+    // Wrap scroll
+    const scrollY = codeScrollOffset % totalHeight;
+
+    // Render lines — only the ones visible on screen
+    const totalLines = lines.length;
+    if (totalLines === 0) return;
+
+    for (let i = 0; i < totalLines; i++) {
+      const line = lines[i];
+      if (!line.trim()) continue;
+
+      // Each line's y position wraps with the scroll
+      let y = (i * lineHeight) - (scrollY % totalHeight) + h * 0.5;
+      // Wrap around
+      if (y < -lineHeight) y += totalHeight;
+      if (y > h + lineHeight) continue;
+
+      // Indent determines x position — code structure becomes visual structure
+      const indent = line.search(/\S/);
+      const x = 40 + indent * fontSize * 0.3;
+
+      // Alpha fades at edges — text emerges from and dissolves into void
+      const edgeFade = Math.min(
+        smoothstep(0, h * 0.15, y),
+        smoothstep(0, h * 0.15, h - y)
+      );
+
+      // Characters that are "active" (keywords, numbers) glow brighter
+      const isKeyword = /\b(uniform|float|vec[234]|mat[234]|texture|sin|cos|mix|smoothstep|void|main|for)\b/.test(line);
+      const brightness = isKeyword ? 1.0 : 0.6;
+
+      codeCtx.globalAlpha = edgeFade * brightness;
+      codeCtx.fillStyle = '#ffffff';
+      codeCtx.fillText(line, x, y);
+    }
+
+    // Upload to GPU
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, codeTexture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, codeCanvas);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
+
+  function smoothstep(edge0, edge1, x) {
+    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+    return t * t * (3 - 2 * t);
+  }
+
+  // ─── Render Loop ─────────────────────────────────────────────
+
+  const startTime = performance.now();
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.floor(canvas.clientWidth * dpr);
+    const h = Math.floor(canvas.clientHeight * dpr);
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+      setupFramebuffers(w, h);
+    }
+  }
+
+  function render() {
+    resize();
+
+    const audio = getAudioData();
+    const time = (performance.now() - startTime) / 1000;
+
+    // If we're on the living shader, let the music mutate it
+    if (programs[currentShader] && programs[currentShader].living) {
+      if (mutateLivingShader(audio, time)) {
+        programs[livingIndex].program = livingProgram;
+        // Auto-enable code overlay so you can see the mutations
+        codeVisible = true;
+      }
+    }
+
+    const { program } = programs[currentShader];
+
+    // ── Render to framebuffer (for feedback) ──
+    const writeFB = fbIndex;
+    const readFB = 1 - fbIndex;
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffers[writeFB]);
+    gl.viewport(0, 0, fbWidth, fbHeight);
+
+    gl.useProgram(program);
+
+    // Attributes
+    const posLoc = gl.getAttribLocation(program, 'a_position');
+    gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+    gl.enableVertexAttribArray(posLoc);
+    gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
+
+    // Uniforms
+    gl.uniform2f(gl.getUniformLocation(program, 'u_resolution'), canvas.width, canvas.height);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_time'), time);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_bass'), audio.bass);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_mid'), audio.mid);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_treble'), audio.treble);
+    gl.uniform1f(gl.getUniformLocation(program, 'u_energy'), audio.energy);
+
+    // Textures
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, fftTexture);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_fft'), 0);
+
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, waveTexture);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_waveform'), 1);
+
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, fbTextures[readFB]);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_feedback'), 2);
+
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    // ── Composite: blend code text into the scene ──
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+
+    if (codeVisible && compositeProgram) { try {
+      // Render code text to texture
+      renderCodeTexture(time, audio.bass, audio.energy);
+
+      gl.useProgram(compositeProgram);
+
+      const cPosLoc = gl.getAttribLocation(compositeProgram, 'a_position');
+      gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+      gl.enableVertexAttribArray(cPosLoc);
+      gl.vertexAttribPointer(cPosLoc, 2, gl.FLOAT, false, 0, 0);
+
+      // Scene texture (what we just rendered to the framebuffer)
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, fbTextures[writeFB]);
+      gl.uniform1i(gl.getUniformLocation(compositeProgram, 'u_scene'), 3);
+
+      // Code texture
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, codeTexture);
+      gl.uniform1i(gl.getUniformLocation(compositeProgram, 'u_code'), 4);
+
+      // FFT for per-character reactivity
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, fftTexture);
+      gl.uniform1i(gl.getUniformLocation(compositeProgram, 'u_fft'), 0);
+
+      gl.uniform1f(gl.getUniformLocation(compositeProgram, 'u_time'), time);
+      gl.uniform1f(gl.getUniformLocation(compositeProgram, 'u_bass'), audio.bass);
+      gl.uniform1f(gl.getUniformLocation(compositeProgram, 'u_energy'), audio.energy);
+      gl.uniform1f(gl.getUniformLocation(compositeProgram, 'u_codeOpacity'), 0.7);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    } catch(e) { console.error('Code overlay error:', e); codeVisible = false; }
+    } else {
+      // No code overlay — blit the scene to screen
+      gl.useProgram(blitProgram);
+
+      const bPosLoc = gl.getAttribLocation(blitProgram, 'a_position');
+      gl.bindBuffer(gl.ARRAY_BUFFER, quadBuf);
+      gl.enableVertexAttribArray(bPosLoc);
+      gl.vertexAttribPointer(bPosLoc, 2, gl.FLOAT, false, 0, 0);
+
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, fbTextures[writeFB]);
+      gl.uniform1i(gl.getUniformLocation(blitProgram, 'u_scene'), 3);
+
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+
+    // Swap ping-pong
+    fbIndex = readFB;
+
+    requestAnimationFrame(render);
+  }
+
+  // ─── Controls ────────────────────────────────────────────────
+
+  let shaderNameTimeout;
+  function showShaderName() {
+    const el = document.getElementById('shader-name');
+    el.textContent = programs[currentShader].name;
+    el.classList.add('show');
+    clearTimeout(shaderNameTimeout);
+    shaderNameTimeout = setTimeout(() => el.classList.remove('show'), 2000);
+  }
+
+  function nextShader(dir) {
+    currentShader = (currentShader + dir + programs.length) % programs.length;
+    showShaderName();
+  }
+
+  // Keyboard
+  document.addEventListener('keydown', e => {
+    switch(e.key) {
+      case 'ArrowRight': nextShader(1); break;
+      case 'ArrowLeft': nextShader(-1); break;
+      case ' ':
+        e.preventDefault();
+        if (programs[currentShader] && programs[currentShader].living) {
+          // On living shader: space = "I like this, evolve from it"
+          likeCurrentShader();
+        } else if (audioElement) {
+          audioElement.paused ? audioElement.play() : audioElement.pause();
+        }
+        break;
+      case 'f':
+        if (document.fullscreenElement) document.exitFullscreen();
+        else canvas.requestFullscreen();
+        break;
+      case 'c':
+        codeVisible = !codeVisible;
+        break;
+    }
+  });
+
+  // Buttons
+  document.getElementById('btn-prev').addEventListener('click', () => nextShader(-1));
+  document.getElementById('btn-next').addEventListener('click', () => nextShader(1));
+
+  // Drag and drop
+  document.addEventListener('dragover', e => { e.preventDefault(); });
+  document.addEventListener('drop', e => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file && file.type.startsWith('audio/')) connectFile(file);
+  });
+
+  // Input buttons
+  document.getElementById('btn-file').addEventListener('click', () => fileInput.click());
+  document.getElementById('btn-tab').addEventListener('click', () => connectTab());
+  document.getElementById('btn-mic').addEventListener('click', () => connectMic());
+
+  // Populate playlist UI
+  const playlistEl = document.getElementById('playlist-section');
+  playlist.forEach((track, i) => {
+    const div = document.createElement('div');
+    div.className = 'track';
+    div.innerHTML = `${track.title} <span class="artist">— ${track.artist}</span>`;
+    div.addEventListener('click', (e) => {
+      e.stopPropagation();
+      playTrack(i);
+    });
+    playlistEl.appendChild(div);
+  });
+
+  // Skip tracks with up/down arrows
+  document.addEventListener('keydown', e => {
+    if (e.key === 'ArrowUp' && currentTrack >= 0) {
+      e.preventDefault();
+      playTrack((currentTrack - 1 + playlist.length) % playlist.length);
+    } else if (e.key === 'ArrowDown' && currentTrack >= 0) {
+      e.preventDefault();
+      playTrack((currentTrack + 1) % playlist.length);
+    }
+  });
+
+  // ─── Start ───────────────────────────────────────────────────
+  resize();
+  requestAnimationFrame(render);
+
+  </script>
+</body>
+</html>
